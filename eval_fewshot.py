@@ -10,10 +10,10 @@ IGNORE_INDEX = -100
 
 parser = argparse.ArgumentParser()
 
-parser.add_argument('--data_path', type=str, default="")
-parser.add_argument('--device_id', type=str, default="")
-parser.add_argument('--model', type=str, default='/data/home/leonxlzhao/Data/llms/phi-1_5', help="")
-parser.add_argument('--embedder', type=str, default="/data/home/leonxlzhao/Data/llms/bge-small-en-v1.5")
+parser.add_argument('--data_path', type=str, default="/opt/tiger/HKU-DASC7606-A2/data/ARC-Easy-test.jsonl")
+parser.add_argument('--device_id', type=str, default="0,1,2,3,4,5,6,7")
+parser.add_argument('--model', type=str, default='microsoft/phi-1_5', help="")
+parser.add_argument('--embedder', type=str, default="BAAI/bge-small-en-v1.5")
 parser.add_argument('--output_path', type=str, help="")
 parser.add_argument('--start_index', type=int, default=0, help="")
 parser.add_argument('--end_index', type=int, default=164, help="")
@@ -170,6 +170,7 @@ def get_model(
     model = PhiForCausalLM.from_pretrained(
         base_model,
         device_map="auto",
+        torch_dtype=torch.float16
     )
     model.config.pad_token_id = tokenizer.pad_token_id
 
