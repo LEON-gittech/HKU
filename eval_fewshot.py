@@ -3,32 +3,11 @@ import pprint
 import os
 import copy
 from str2bool import str2bool
-from typing import Dict, Sequence
+from typing import Dict, Sequence, Tuple
 from sentence_transformers import SentenceTransformer
+from transformers import AutoModelForCausalLM, AutoTokenizer, MistralForCausalLM
 
 IGNORE_INDEX = -100
-
-parser = argparse.ArgumentParser()
-
-parser.add_argument('--data_path', type=str, default="/opt/tiger/HKU-DASC7606-A2/data/ARC-Easy-test.jsonl")
-parser.add_argument('--device_id', type=str, default="0,1,2,3,4,5,6,7")
-parser.add_argument('--model', type=str, default='microsoft/phi-1_5', help="")
-parser.add_argument('--embedder', type=str, default="BAAI/bge-small-en-v1.5")
-parser.add_argument('--output_path', type=str, help="")
-parser.add_argument('--start_index', type=int, default=0, help="")
-parser.add_argument('--end_index', type=int, default=164, help="")
-parser.add_argument('--N', type=int, default=8, help="")
-parser.add_argument('--max_len', type=int, default=512, help="")
-parser.add_argument('--overwrite', type=str2bool, default=False, help="")
-parser.add_argument('--prompt_type', type=str, default="v1.0", help="")
-parser.add_argument('--top_k', type=str2bool, default=False, help="")
-parser.add_argument('--top_k_reverse', type=str2bool, default=False, help="")
-
-args = parser.parse_args()
-
-os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device_id)
-
-
 from tqdm import tqdm
 import torch
 import json
@@ -101,6 +80,7 @@ def llm_embedder(llm, sentences, is_query=True):
     }
 
     instruction = INSTRUCTIONS["icl"]
+    # prompt
     if is_query:
         sentences = [instruction["query"] + s for s in sentences]
     else:
@@ -136,11 +116,11 @@ def generate_prompt(question, candidate_answers, prompt_type, N,
 
     indices = list(range(len(demonstrations)))
     if top_k: # task 5
-        question_embeddings = llm_embedder(embedder, [question], True) # [1, n_dim]
-        similarity = question_embeddings @ demonstration_embeddings.T # [1, n_demo]
+        question_embeddings = llm_embedder(embedder, [question], True) # [1, n_dim] （1，384）
+        similarity = question_embeddings @ demonstration_embeddings.T # [1, n_demo] （2251,384）
         indices_sorted = sorted(list(range(len(demonstrations))), key=lambda x: similarity[0][x], reverse=True)
         if top_k_reverse:
-            indices = indices_sorted[:N][::-1] + indices_sorted[N:]
+            indices = indices_sorted[:N][::-1] + indices_sorted[N:] #逆序操作
         else:
             indices = indices_sorted
 
@@ -178,7 +158,23 @@ def get_model(
 
     return tokenizer, model
 
-def _tokenize_fn(strings: Sequence[str], tokenizer: transformers.PreTrainedTokenizer) -> Dict:
+def get_mistral(base_model):
+    tokenizer = AutoTokenizer.from_pretrained(base_model)
+    tokenizer.pad_token_id = tokenizer.eos_token_id
+    tokenizer.pad_token = tokenizer.eos_token
+
+    model = AutoModelForCausalLM.from_pretrained(
+        base_model,
+        device_map="auto",
+        torch_dtype=torch.float16
+    )
+    model.config.pad_token_id = tokenizer.pad_token_id
+
+    model.eval()
+
+    return tokenizer, model
+
+def _tokenize_fn(strings: Sequence[str], tokenizer: transformers.PreTrainedTokenizer, args) -> Dict:
     """Tokenize a list of strings."""
     tokenized_list = [
         tokenizer(
@@ -206,19 +202,56 @@ def preprocess(
     sources: Sequence[str],
     targets: Sequence[str],
     tokenizer: transformers.PreTrainedTokenizer,
+    args
 ) -> Dict:
     """Preprocess the data by tokenizing."""
     examples = [s + t for s, t in zip(sources, targets)]
-    examples_tokenized, sources_tokenized = [_tokenize_fn(strings, tokenizer) for strings in (examples, sources)]
+    examples_tokenized, sources_tokenized = [_tokenize_fn(strings, tokenizer, args) for strings in (examples, sources)]
     input_ids = examples_tokenized["input_ids"]
     labels = copy.deepcopy(input_ids)
     for label, source_len in zip(labels, sources_tokenized["input_ids_lens"]):
         label[:source_len] = IGNORE_INDEX
     return dict(input_ids=torch.stack(input_ids).to(device), labels=torch.stack(labels).to(device))
 
+def mistral_preprocess(
+    sources: Sequence[str],
+    targets: Sequence[str],
+    tokenizer: transformers.PreTrainedTokenizer,
+    args
+) -> Dict:
+    """Preprocess the data by tokenizing."""
+    examples = [s + t for s, t in zip(sources, targets)]
+    examples_tokenized, sources_tokenized = [_tokenize_fn(strings, tokenizer, args) for strings in (examples, sources)]
+    input_ids = examples_tokenized["input_ids"]
+    attention_masks = torch.ones([len(input_ids)]+list(input_ids[0].shape))
+    labels = copy.deepcopy(input_ids)
+    for label, source_len, attention_mask in zip(labels, sources_tokenized["input_ids_lens"], attention_masks):
+        label[:source_len] = IGNORE_INDEX
+        attention_mask[source_len:] = 0
+    return dict(input_ids=torch.stack(input_ids).to(device), labels=torch.stack(labels).to(device), attention_mask=attention_masks)
+
 
 
 def main():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('--data_path', type=str, default="/opt/tiger/HKU-DASC7606-A2/data/ARC-Easy-test.jsonl")
+    parser.add_argument('--device_id', type=str, default="0,1,2,3,4,5,6,7")
+    parser.add_argument('--model', type=str, default='microsoft/phi-1_5', help="")
+    parser.add_argument('--embedder', type=str, default="BAAI/bge-small-en-v1.5")
+    parser.add_argument('--output_path', type=str, help="")
+    parser.add_argument('--start_index', type=int, default=0, help="")
+    parser.add_argument('--end_index', type=int, default=164, help="")
+    parser.add_argument('--N', type=int, default=8, help="")
+    parser.add_argument('--max_len', type=int, default=512, help="")
+    parser.add_argument('--overwrite', type=str2bool, default=False, help="")
+    parser.add_argument('--prompt_type', type=str, default="v1.0", help="")
+    parser.add_argument('--top_k', type=str2bool, default=False, help="")
+    parser.add_argument('--top_k_reverse', type=str2bool, default=False, help="")
+    args = """--model 'mistralai/Mistral-7B-Instruct-v0.2' --embedder "BAAI/bge-small-en-v1.5" --data_path "data/ARC-Challenge-test.jsonl" --start_index 0 --end_index 9999 --max_len 1024 --output_path "test_mistral" --overwrite False --prompt_type "v2.0" --N 8 --top_k True --top_k_reverse False""".replace("\"","").replace("\'","").split(" ")
+    args = parser.parse_args(args)
+
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device_id)
 
     argsdict = vars(args)
     print(pprint.pformat(argsdict))
@@ -226,14 +259,15 @@ def main():
     problems = get_arc_problems(args.data_path)[args.start_index: args.end_index]
 
     num_samples = len(problems)
-    tokenizer, model = get_model(base_model=args.model)
+    # tokenizer, model = get_model(base_model=args.model)
+    tokenizer, model = get_mistral(base_model=args.model)
     print(f"Loaded {args.model}.")
 
     embedder = SentenceTransformer(args.embedder, device=device)
     print(f"loaded {args.embedder}.")
 
     demonstrations = load_all_demonstrations(args.data_path.replace("test", "train"))
-    demonstration_embeddings = llm_embedder(embedder, [d[0] for d in demonstrations], False) # ndarray: [n_demons, n_dim]
+    demonstration_embeddings = llm_embedder(embedder, [d[0] for d in demonstrations], False) # ndarray: [n_demons, n_dim]， [d[0] for d in demonstrations]=questions
 
     for i in tqdm(range(num_samples), ncols=0, total=num_samples):
         output_file = args.output_path + '/{}.jsonl'.format(args.start_index + i)
@@ -253,7 +287,7 @@ def main():
             print(f"prompt #{i}: {source}")
 
         target = " {}".format(answer)
-        encoding = preprocess([source], [target], tokenizer)
+        encoding = mistral_preprocess([source], [target], tokenizer, args)
 
         with torch.no_grad():
             outputs = model(**encoding)

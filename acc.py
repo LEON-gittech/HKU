@@ -4,7 +4,7 @@ import json
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='ARC evaluation')
-    parser.add_argument('--prediction_path', type=str)
+    parser.add_argument('--prediction_path', type=str, default="/opt/tiger/HKU-DASC7606-A2/test")
 
     args = parser.parse_args()
     prediction_path = args.prediction_path
@@ -21,7 +21,7 @@ if __name__ == "__main__":
                 if id not in id_to_score:
                     id_to_score[id] = [(label, log_likelihood)]
                 else:
-                    id_to_score[id].append((label, log_likelihood))
+                    id_to_score[id].append((label, log_likelihood)) #test 文件夹中每个 question 有四个文件，分别对应 A，B，C，D 的 loglikelihood
                 if id not in id_to_answer:
                     id_to_answer[id] = answerKey
     correct, total = 0, 0

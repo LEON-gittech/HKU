@@ -790,8 +790,8 @@ class PhiForCausalLM(PhiPreTrainedModel):
 
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         outputs = self.model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
+            input_ids=input_ids, #[1,208]
+            attention_mask=attention_mask, #None
             position_ids=position_ids,
             past_key_values=past_key_values,
             inputs_embeds=inputs_embeds,
@@ -802,14 +802,14 @@ class PhiForCausalLM(PhiPreTrainedModel):
         )
 
         hidden_states = outputs[0]
-        logits = self.lm_head(hidden_states)
+        logits = self.lm_head(hidden_states) # [1,208,51200]
         logits = logits.float()
 
         loss = None
         if labels is not None:
             # Shift so that tokens < n predict n
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
+            shift_logits = logits[..., :-1, :].contiguous() #[1,207,51200]
+            shift_labels = labels[..., 1:].contiguous() #[1,207]
             # Flatten the tokens
             loss_fct = CrossEntropyLoss()
             shift_logits = shift_logits.view(-1, self.config.vocab_size)

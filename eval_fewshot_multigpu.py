@@ -11,7 +11,7 @@ IGNORE_INDEX = -100
 parser = argparse.ArgumentParser()
 
 parser.add_argument('--data_path', type=str, default="")
-parser.add_argument('--device_id', type=str, default="")
+parser.add_argument('--device_id', type=str, default="0,1,2,3,4,5,6,7")
 parser.add_argument('--model', type=str, default='/data/home/leonxlzhao/Data/llms/phi-1_5', help="")
 parser.add_argument('--embedder', type=str, default="/data/home/leonxlzhao/Data/llms/bge-small-en-v1.5")
 parser.add_argument('--output_path', type=str, help="")
@@ -24,7 +24,8 @@ parser.add_argument('--prompt_type', type=str, default="v1.0", help="")
 parser.add_argument('--top_k', type=str2bool, default=False, help="")
 parser.add_argument('--top_k_reverse', type=str2bool, default=False, help="")
 
-args = parser.parse_args()
+args = """--model 'microsoft/phi-1_5' --embedder "BAAI/bge-small-en-v1.5" --data_path "/opt/tiger/HKU-DASC7606-A2/data/ARC-Easy-test.jsonl" --start_index 0 --end_index 9999 --max_len 1024 --output_path "test_16" --overwrite False --prompt_type "v2.0" --N 16 --top_k True --top_k_reverse False""".replace("\"","").replace("\'","").split(" ")
+args = parser.parse_args(args)
 
 os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device_id)
 
@@ -172,7 +173,7 @@ def get_model(
     tokenizer.pad_token = tokenizer.eos_token
 
     n_gpus = torch.cuda.device_count()
-    memory = '4GiB' # adjust this value to ensure that the whole model could be loaded
+    memory = '2GiB' # adjust this value to ensure that the whole model could be loaded
     no_split_module_classes = PhiForCausalLM._no_split_modules
     max_memory = {int(cuda): memory for cuda in range(n_gpus)}
     config = PhiConfig.from_pretrained(base_model)
