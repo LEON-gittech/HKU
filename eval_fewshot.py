@@ -5,7 +5,7 @@ import copy
 from str2bool import str2bool
 from typing import Dict, Sequence, Tuple
 from sentence_transformers import SentenceTransformer
-from transformers import AutoModelForCausalLM, AutoTokenizer, MistralForCausalLM
+from transformers import AutoModelForCausalLM, AutoTokenizer, MistralForCausalLM, T5Tokenizer, T5ForConditionalGeneration
 
 IGNORE_INDEX = -100
 from tqdm import tqdm
@@ -15,6 +15,7 @@ import json
 import transformers
 from modeling_phi import PhiForCausalLM
 from tokenization_codegen import CodeGenTokenizer
+from modeling_genmc import GenMC
 
 
 if torch.cuda.is_available():
@@ -174,6 +175,22 @@ def get_mistral(base_model):
 
     return tokenizer, model
 
+def remove_t5_model_prefix(key):
+    # 替换前缀
+    return key.replace('t5_model.', '')
+
+def get_t5(base_model, checkpoint):
+    tokenizer = T5Tokenizer.from_pretrained(base_model)
+    model = T5ForConditionalGeneration.from_pretrained(base_model)
+    check_point = torch.load(checkpoint)["model_state_dict"]
+    # for name, param in model.named_parameters():
+    #     print(name)
+    # updated_checkpoint = {remove_t5_model_prefix(k): v for k, v in check_point.items()}
+    # model.load_state_dict(updated_checkpoint)
+    model.load_state_dict(check_point)
+    model.eval()
+    return tokenizer, model
+
 def _tokenize_fn(strings: Sequence[str], tokenizer: transformers.PreTrainedTokenizer, args) -> Dict:
     """Tokenize a list of strings."""
     tokenized_list = [
@@ -228,7 +245,7 @@ def mistral_preprocess(
     for label, source_len, attention_mask in zip(labels, sources_tokenized["input_ids_lens"], attention_masks):
         label[:source_len] = IGNORE_INDEX
         attention_mask[source_len:] = 0
-    return dict(input_ids=torch.stack(input_ids).to(device), labels=torch.stack(labels).to(device), attention_mask=attention_masks)
+    return dict(input_ids=torch.stack(input_ids).to(device), labels=torch.stack(labels).to(device), attention_mask=attention_masks.to(device))
 
 
 
@@ -248,7 +265,7 @@ def main():
     parser.add_argument('--prompt_type', type=str, default="v1.0", help="")
     parser.add_argument('--top_k', type=str2bool, default=False, help="")
     parser.add_argument('--top_k_reverse', type=str2bool, default=False, help="")
-    args = """--model 'mistralai/Mistral-7B-Instruct-v0.2' --embedder "BAAI/bge-small-en-v1.5" --data_path "data/ARC-Challenge-test.jsonl" --start_index 0 --end_index 9999 --max_len 1024 --output_path "test_mistral" --overwrite False --prompt_type "v2.0" --N 8 --top_k True --top_k_reverse False""".replace("\"","").replace("\'","").split(" ")
+    args = """--model 'google-t5/t5-large' --embedder "BAAI/bge-small-en-v1.5" --data_path "data/ARC-Challenge-test.jsonl" --start_index 0 --end_index 9999 --max_len 1024 --output_path "test_mistral" --overwrite False --prompt_type "v2.0" --N 8 --top_k True --top_k_reverse False""".replace("\"","").replace("\'","").split(" ")
     args = parser.parse_args(args)
 
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device_id)
@@ -260,7 +277,8 @@ def main():
 
     num_samples = len(problems)
     # tokenizer, model = get_model(base_model=args.model)
-    tokenizer, model = get_mistral(base_model=args.model)
+    # tokenizer, model = get_mistral(base_model=args.model)
+    tokenizer, model = get_t5(base_model=args.model, checkpoint="/opt/tiger/GenMC/outputs/arc_easy_large/lr_5e-05_seed_1_bs_8_ga_2_layer_num_1_alpha_1.0_beta_0.5/pytorch_model.bin")
     print(f"Loaded {args.model}.")
 
     embedder = SentenceTransformer(args.embedder, device=device)
@@ -304,9 +322,6 @@ def main():
                 "label": problems[i]["label"],
                 "answerKey": problems[i]["answerKey"],
             }) + "\n")
-
-
-
 
 if __name__ == '__main__':
     main()
