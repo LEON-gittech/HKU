@@ -17,7 +17,8 @@ from modeling_phi import PhiForCausalLM
 from tokenization_codegen import CodeGenTokenizer
 from modeling_genmc import GenMC
 
-
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+# device = "cpu"
 if torch.cuda.is_available():
     device = "cuda"
 else:
@@ -150,7 +151,7 @@ def get_model(
 
     model = PhiForCausalLM.from_pretrained(
         base_model,
-        # torch_dtype=torch.float16
+        torch_dtype=torch.bfloat16
         # device_map="auto"
     )
     model.config.pad_token_id = tokenizer.pad_token_id
@@ -265,8 +266,8 @@ def main():
     parser.add_argument('--prompt_type', type=str, default="v1.0", help="")
     parser.add_argument('--top_k', type=str2bool, default=False, help="")
     parser.add_argument('--top_k_reverse', type=str2bool, default=False, help="")
-    args = """--model 'google-t5/t5-large' --embedder "BAAI/bge-small-en-v1.5" --data_path "data/ARC-Challenge-train.jsonl" --start_index 0 --end_index 9999 --max_len 1024 --output_path "test_mistral" --overwrite False --prompt_type "v2.0" --N 8 --top_k True --top_k_reverse False""".replace("\"","").replace("\'","").split(" ")
-    args = parser.parse_args()
+    args = """--model '/opt/tiger/HKU/saved_models' --embedder "BAAI/bge-small-en-v1.5" --data_path "data/ARC-Challenge-test.jsonl" --start_index 0 --end_index 9999 --max_len 1024 --output_path "test_finetune" --overwrite False --prompt_type "v2.0" --N 8 --top_k True --top_k_reverse False""".replace("\"","").replace("\'","").split(" ")
+    args = parser.parse_args(args)
 
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device_id)
 
@@ -277,6 +278,7 @@ def main():
 
     num_samples = len(problems)
     tokenizer, model = get_model(base_model=args.model)
+    model.to(device)
     # tokenizer, model = get_mistral(base_model=args.model)
     # tokenizer, model = get_t5(base_model=args.model, checkpoint="/opt/tiger/GenMC/outputs/arc_easy_large/lr_5e-05_seed_1_bs_8_ga_2_layer_num_1_alpha_1.0_beta_0.5/pytorch_model.bin")
     print(f"Loaded {args.model}.")
@@ -325,23 +327,17 @@ def main():
             }) + "\n")
 
 import torch.nn.functional as F
-focalloss_gamma = 2
-focalloss_alpha = 0.25
 def compute_loss(model, input_ids, input_mask, labels, return_outputs=False):
     hidden_states, logits, outputs = model(input_ids, attention_mask=input_mask, labels=labels)
     
     logits = logits[:,0,:]
-    targets = F.one_hot(labels, num_classes=logits.shape[-1])
+    try:
+        targets = F.one_hot(labels, num_classes=4)
+    except:
+        print(labels)
     
     p = torch.softmax(logits, dim=1)
-    ce_loss = F.binary_cross_entropy_with_logits(logits, targets.float(), reduction="none")
-    p_t = p * targets + (1 - p) * (1 - targets)
-    loss = ce_loss * ((1 - p_t) ** focalloss_gamma)
-
-    if focalloss_alpha >= 0:
-        alpha_t = focalloss_alpha * targets + (1 - focalloss_alpha) * (1 - targets)
-        loss = alpha_t * loss
-
+    loss = F.cross_entropy(logits, targets.float(), reduction="none")
     loss = loss.mean()
     # if focalloss_reduction == "mean":
     #     loss = loss.mean()
@@ -349,6 +345,55 @@ def compute_loss(model, input_ids, input_mask, labels, return_outputs=False):
     #     loss = loss.sum()
 
     return loss, p
+
+IGNORE_INDEX = -100
+DEFAULT_PAD_TOKEN = "[PAD]"
+DEFAULT_EOS_TOKEN = "</s>"
+DEFAULT_BOS_TOKEN = "<s>"
+DEFAULT_UNK_TOKEN = "<unk>"
+DEFAULT_CLS_TOKEN = "[CLS]"
+DEFAULT_MASK_TOKEN = "[MASK]"
+DEFAULT_SEP_TOKEN = "[SEP]"
+
+def smart_tokenizer_and_embedding_resize(
+    special_tokens_dict: Dict,
+    tokenizer: transformers.PreTrainedTokenizer,
+    model: transformers.PreTrainedModel,
+):
+    """Resize tokenizer and embedding.
+
+    Note: This is the unoptimized version that may make your embedding size not be divisible by 64.
+    """
+    num_new_tokens = tokenizer.add_special_tokens(special_tokens_dict)
+    model.resize_token_embeddings(len(tokenizer))
+
+    if num_new_tokens > 0:
+        input_embeddings = model.get_input_embeddings().weight.data
+        output_embeddings = model.get_output_embeddings().weight.data
+
+        input_embeddings_avg = input_embeddings[:-num_new_tokens].mean(dim=0, keepdim=True)
+        output_embeddings_avg = output_embeddings[:-num_new_tokens].mean(dim=0, keepdim=True)
+
+        input_embeddings[-num_new_tokens:] = input_embeddings_avg
+        output_embeddings[-num_new_tokens:] = output_embeddings_avg
+
+def get_special_tokens_dict(tokenizer):
+    special_tokens_dict = dict()
+    if tokenizer.pad_token is None:
+        special_tokens_dict["pad_token"] = DEFAULT_PAD_TOKEN
+    if tokenizer.eos_token is None:
+        special_tokens_dict["eos_token"] = DEFAULT_EOS_TOKEN
+    if tokenizer.bos_token is None:
+        special_tokens_dict["bos_token"] = DEFAULT_BOS_TOKEN
+    if tokenizer.unk_token is None:
+        special_tokens_dict["unk_token"] = DEFAULT_UNK_TOKEN
+    if tokenizer.cls_token is None:
+        special_tokens_dict["cls_token"] = DEFAULT_CLS_TOKEN
+    if tokenizer.mask_token is None:
+        special_tokens_dict["mask_token"] = DEFAULT_MASK_TOKEN
+    if tokenizer.sep_token is None:
+        special_tokens_dict["sep_token"] = DEFAULT_SEP_TOKEN
+    return special_tokens_dict
 
 def train():
     parser = argparse.ArgumentParser()
@@ -365,9 +410,9 @@ def train():
     parser.add_argument('--prompt_type', type=str, default="v1.0", help="")
     parser.add_argument('--top_k', type=str2bool, default=False, help="")
     parser.add_argument('--top_k_reverse', type=str2bool, default=False, help="")
-    parser.add_argument('--lr', type=float, default=1e-5)
-    parser.add_argument('--epoch', type=int, default=2)
-    args = """--model 'microsoft/phi-2' --embedder "BAAI/bge-small-en-v1.5" --data_path "data/ARC-Challenge-train.jsonl" --start_index 0 --end_index 9999 --max_len 1024 --output_path "test_phi2_preprocess" --overwrite False --prompt_type "v2.0" --N 8 --top_k True --top_k_reverse False""".replace("\"","").replace("\'","").split(" ")
+    parser.add_argument('--lr', type=float, default=1e-4)
+    parser.add_argument('--epoch', type=int, default=10)
+    args = """--model '/opt/tiger/HKU/saved_models' --embedder "BAAI/bge-small-en-v1.5" --data_path "data/ARC-Challenge-train.jsonl" --start_index 0 --end_index 9999 --max_len 1024 --output_path "test_phi2_preprocess" --overwrite False --prompt_type "v2.0" --N 8 --top_k True --top_k_reverse False""".replace("\"","").replace("\'","").split(" ")
     args = parser.parse_args(args)
 
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device_id)
@@ -389,11 +434,10 @@ def train():
     prompt = "this is a question and four options marked as A,B,C,D. Choose the right option for the queston and output the answer, the answer should be one of A,B,C,D"
     for p in problems:
         data["data"].append("[CLS] "+prompt+p["question"]+p["candidate_answers"])
-        if p["answerKey"] not in "ABCD": data["label"].append(int(p["answerKey"]))
+        if p["answerKey"] not in "ABCD": data["label"].append(int(p["answerKey"])-1)
         else: data["label"].append(dic[p["answerKey"]])
     num_samples = len(problems)
     tokenizer, model = get_model(base_model=args.model)
-    from utils import get_special_tokens_dict, smart_tokenizer_and_embedding_resize
     special_tokens_dict = get_special_tokens_dict(tokenizer)
     smart_tokenizer_and_embedding_resize(
         special_tokens_dict=special_tokens_dict,
@@ -402,7 +446,7 @@ def train():
     )
     MAX_LEN = 256
     data["data"] = tokenizer(data["data"], add_special_tokens = True, padding = 'max_length', truncation=True, max_length = MAX_LEN, return_attention_mask = True, return_tensors = 'pt')
-    batch_size = 8
+    batch_size = 32
     # train_data = TensorDataset()
     print(f"Loaded {args.model}.")
     import numpy as np
@@ -411,20 +455,14 @@ def train():
     train_labels = data["label"]
     train_data = TensorDataset(train_inputs, train_masks, torch.tensor(train_labels))
     train_sampler = RandomSampler(train_data)
-    train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=batch_size)
+    train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=batch_size, drop_last=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
     import random
     model.train()
-    model.cuda()
+    model.to(device)
     epochs = args.epoch
     from utils import compute_metrics
     for epoch_i in range(epochs):
-        # Initialize lists to store metrics for each epoch
-        train_accuracy_values = []
-        train_recall_values = []
-        train_confidence_pos_values = []
-        train_confidence_neg_values = []
-
         # Set model to training mode
         model.train()
 
@@ -483,3 +521,4 @@ def train():
 
 if __name__ == '__main__':
     train()
+    # main()
