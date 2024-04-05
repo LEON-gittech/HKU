@@ -802,6 +802,7 @@ class PhiForCausalLM(PhiPreTrainedModel):
         )
 
         hidden_states = outputs[0]
+        
         logits = self.cls_head(hidden_states)
         return hidden_states, logits, outputs
         logits = self.lm_head(hidden_states) # [1,208,51200]

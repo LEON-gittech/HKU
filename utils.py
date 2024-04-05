@@ -3,6 +3,9 @@ DEFAULT_PAD_TOKEN = "[PAD]"
 DEFAULT_EOS_TOKEN = "</s>"
 DEFAULT_BOS_TOKEN = "<s>"
 DEFAULT_UNK_TOKEN = "<unk>"
+DEFAULT_CLS_TOKEN = "[CLS]"
+DEFAULT_MASK_TOKEN = "[MASK]"
+DEFAULT_SEP_TOKEN = "[SEP]"
 
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -48,6 +51,12 @@ def get_special_tokens_dict(tokenizer):
         special_tokens_dict["bos_token"] = DEFAULT_BOS_TOKEN
     if tokenizer.unk_token is None:
         special_tokens_dict["unk_token"] = DEFAULT_UNK_TOKEN
+    if tokenizer.cls_token is None:
+        special_tokens_dict["cls_token"] = DEFAULT_CLS_TOKEN
+    if tokenizer.mask_token is None:
+        special_tokens_dict["mask_token"] = DEFAULT_MASK_TOKEN
+    if tokenizer.sep_token is None:
+        special_tokens_dict["sep_token"] = DEFAULT_SEP_TOKEN
     return special_tokens_dict
 
 def compute_metrics(logits, labels):
