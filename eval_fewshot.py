@@ -150,7 +150,7 @@ def get_model(
 
     model = PhiForCausalLM.from_pretrained(
         base_model,
-        torch_dtype=torch.float16
+        # torch_dtype=torch.float16
         # device_map="auto"
     )
     model.config.pad_token_id = tokenizer.pad_token_id
@@ -265,7 +265,7 @@ def main():
     parser.add_argument('--prompt_type', type=str, default="v1.0", help="")
     parser.add_argument('--top_k', type=str2bool, default=False, help="")
     parser.add_argument('--top_k_reverse', type=str2bool, default=False, help="")
-    args = """--model 'google-t5/t5-large' --embedder "BAAI/bge-small-en-v1.5" --data_path "data/ARC-Challenge-test.jsonl" --start_index 0 --end_index 9999 --max_len 1024 --output_path "test_mistral" --overwrite False --prompt_type "v2.0" --N 8 --top_k True --top_k_reverse False""".replace("\"","").replace("\'","").split(" ")
+    args = """--model 'google-t5/t5-large' --embedder "BAAI/bge-small-en-v1.5" --data_path "data/ARC-Challenge-train.jsonl" --start_index 0 --end_index 9999 --max_len 1024 --output_path "test_mistral" --overwrite False --prompt_type "v2.0" --N 8 --top_k True --top_k_reverse False""".replace("\"","").replace("\'","").split(" ")
     args = parser.parse_args()
 
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device_id)
@@ -353,7 +353,7 @@ def compute_loss(model, input_ids, input_mask, labels, return_outputs=False):
 def train():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_path', type=str, default="/opt/tiger/HKU-DASC7606-A2/data/ARC-Easy-test.jsonl")
-    parser.add_argument('--device_id', type=str, default="0,1,2,3,4,5,6,7")
+    parser.add_argument('--device_id', type=str, default="0")
     parser.add_argument('--model', type=str, default='microsoft/phi-1_5', help="")
     parser.add_argument('--embedder', type=str, default="BAAI/bge-small-en-v1.5")
     parser.add_argument('--output_path', type=str, help="")
@@ -454,8 +454,10 @@ def train():
             # Compute loss
             # loss = outputs[0]
             loss, logits = compute_loss(model,b_input_ids,b_input_mask,b_labels)
-            
-            train_loss_values.append(loss.item())
+            try:
+                train_loss_values.append(loss.item())
+            except:
+                print(loss)
 
             # Perform backward pass
             loss.backward()
