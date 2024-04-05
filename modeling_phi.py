@@ -729,7 +729,7 @@ class PhiForCausalLM(PhiPreTrainedModel):
         self.model = PhiModel(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=True)
-
+        self.cls_head = nn.Linear(config.hidden_size, 4, bias=True)
         # Initialize weights and apply final processing
         self.post_init()
 
@@ -802,6 +802,8 @@ class PhiForCausalLM(PhiPreTrainedModel):
         )
 
         hidden_states = outputs[0]
+        logits = self.cls_head(hidden_states)
+        return hidden_states, logits, outputs
         logits = self.lm_head(hidden_states) # [1,208,51200]
         logits = logits.float()
 

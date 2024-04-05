@@ -5,7 +5,7 @@ import copy
 from str2bool import str2bool
 from typing import Dict, Sequence, Tuple
 from sentence_transformers import SentenceTransformer
-from transformers import AutoModelForCausalLM, AutoTokenizer, MistralForCausalLM, T5Tokenizer, T5ForConditionalGeneration
+from transformers import AutoModelForCausalLM, AutoTokenizer, T5Tokenizer, T5ForConditionalGeneration, AutoModelForSequenceClassification
 
 IGNORE_INDEX = -100
 from tqdm import tqdm
@@ -150,8 +150,8 @@ def get_model(
 
     model = PhiForCausalLM.from_pretrained(
         base_model,
-        device_map="auto",
         torch_dtype=torch.float16
+        # device_map="auto"
     )
     model.config.pad_token_id = tokenizer.pad_token_id
 
@@ -266,7 +266,7 @@ def main():
     parser.add_argument('--top_k', type=str2bool, default=False, help="")
     parser.add_argument('--top_k_reverse', type=str2bool, default=False, help="")
     args = """--model 'google-t5/t5-large' --embedder "BAAI/bge-small-en-v1.5" --data_path "data/ARC-Challenge-test.jsonl" --start_index 0 --end_index 9999 --max_len 1024 --output_path "test_mistral" --overwrite False --prompt_type "v2.0" --N 8 --top_k True --top_k_reverse False""".replace("\"","").replace("\'","").split(" ")
-    args = parser.parse_args(args)
+    args = parser.parse_args()
 
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device_id)
 
@@ -276,9 +276,9 @@ def main():
     problems = get_arc_problems(args.data_path)[args.start_index: args.end_index]
 
     num_samples = len(problems)
-    # tokenizer, model = get_model(base_model=args.model)
+    tokenizer, model = get_model(base_model=args.model)
     # tokenizer, model = get_mistral(base_model=args.model)
-    tokenizer, model = get_t5(base_model=args.model, checkpoint="/opt/tiger/GenMC/outputs/arc_easy_large/lr_5e-05_seed_1_bs_8_ga_2_layer_num_1_alpha_1.0_beta_0.5/pytorch_model.bin")
+    # tokenizer, model = get_t5(base_model=args.model, checkpoint="/opt/tiger/GenMC/outputs/arc_easy_large/lr_5e-05_seed_1_bs_8_ga_2_layer_num_1_alpha_1.0_beta_0.5/pytorch_model.bin")
     print(f"Loaded {args.model}.")
 
     embedder = SentenceTransformer(args.embedder, device=device)
@@ -305,7 +305,8 @@ def main():
             print(f"prompt #{i}: {source}")
 
         target = " {}".format(answer)
-        encoding = mistral_preprocess([source], [target], tokenizer, args)
+        # encoding = mistral_preprocess([source], [target], tokenizer, args)
+        encoding = preprocess([source], [target], tokenizer, args)
 
         with torch.no_grad():
             outputs = model(**encoding)
@@ -323,5 +324,172 @@ def main():
                 "answerKey": problems[i]["answerKey"],
             }) + "\n")
 
+import torch.nn.functional as F
+focalloss_gamma = 2
+focalloss_alpha = 0.25
+def compute_loss(model, input_ids, input_mask, labels, return_outputs=False):
+    hidden_states, logits, outputs = model(input_ids, attention_mask=input_mask, labels=labels)
+    
+    logits = logits
+    targets = F.one_hot(labels, num_classes=logits.shape[-1])
+    
+    p = torch.sigmoid(logits)
+    ce_loss = F.binary_cross_entropy_with_logits(logits, targets.float(), reduction="none")
+    p_t = p * targets + (1 - p) * (1 - targets)
+    loss = ce_loss * ((1 - p_t) ** focalloss_gamma)
+
+    if focalloss_alpha >= 0:
+        alpha_t = focalloss_alpha * targets + (1 - focalloss_alpha) * (1 - targets)
+        loss = alpha_t * loss
+
+    loss = loss.mean()
+    # if focalloss_reduction == "mean":
+    #     loss = loss.mean()
+    # elif focalloss_reduction == "sum":
+    #     loss = loss.sum()
+
+    return loss, outputs
+
+def train():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--data_path', type=str, default="/opt/tiger/HKU-DASC7606-A2/data/ARC-Easy-test.jsonl")
+    parser.add_argument('--device_id', type=str, default="0,1,2,3,4,5,6,7")
+    parser.add_argument('--model', type=str, default='microsoft/phi-1_5', help="")
+    parser.add_argument('--embedder', type=str, default="BAAI/bge-small-en-v1.5")
+    parser.add_argument('--output_path', type=str, help="")
+    parser.add_argument('--start_index', type=int, default=0, help="")
+    parser.add_argument('--end_index', type=int, default=164, help="")
+    parser.add_argument('--N', type=int, default=8, help="")
+    parser.add_argument('--max_len', type=int, default=512, help="")
+    parser.add_argument('--overwrite', type=str2bool, default=False, help="")
+    parser.add_argument('--prompt_type', type=str, default="v1.0", help="")
+    parser.add_argument('--top_k', type=str2bool, default=False, help="")
+    parser.add_argument('--top_k_reverse', type=str2bool, default=False, help="")
+    parser.add_argument('--lr', type=float, default=1e-5)
+    parser.add_argument('--epoch', type=int, default=2)
+    args = """--model 'microsoft/phi-2' --embedder "BAAI/bge-small-en-v1.5" --data_path "data/ARC-Challenge-test.jsonl" --start_index 0 --end_index 9999 --max_len 1024 --output_path "test_phi2_preprocess" --overwrite False --prompt_type "v2.0" --N 8 --top_k True --top_k_reverse False""".replace("\"","").replace("\'","").split(" ")
+    args = parser.parse_args(args)
+
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device_id)
+
+    argsdict = vars(args)
+    print(pprint.pformat(argsdict))
+
+    problems = get_arc_problems(args.data_path)[args.start_index: args.end_index]
+    tmp = []
+    for i in range(len(problems)):
+        if i%4==0:
+            tmp.append(problems[i])
+    problems = tmp
+    data = {}
+    data["data"] = []
+    data["label"]=[]
+    dic = {"A":0,"B":1,"C":2,"D":3}
+    from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
+    prompt = "this is a question and four options marked as A,B,C,D. Choose the right option for the queston and output the answer, the answer should be one of A,B,C,D"
+    for p in problems:
+        data["data"].append(prompt+p["question"]+p["candidate_answers"])
+        if p["answerKey"] not in "ABCD": data["label"].append(int(p["answerKey"]))
+        else: data["label"].append(dic[p["answerKey"]])
+    num_samples = len(problems)
+    tokenizer, model = get_model(base_model=args.model)
+    from utils import get_special_tokens_dict, smart_tokenizer_and_embedding_resize
+    special_tokens_dict = get_special_tokens_dict(tokenizer)
+    smart_tokenizer_and_embedding_resize(
+        special_tokens_dict=special_tokens_dict,
+        tokenizer=tokenizer,
+        model=model,
+    )
+    MAX_LEN = 256
+    data["data"] = tokenizer(data["data"], add_special_tokens = True, padding = 'max_length', truncation=True, max_length = MAX_LEN, return_attention_mask = True, return_tensors = 'pt')
+    batch_size = 8
+    # train_data = TensorDataset()
+    print(f"Loaded {args.model}.")
+    import numpy as np
+    train_inputs = data["data"]["input_ids"]
+    train_masks = data["data"]["attention_mask"]
+    train_labels = data["label"]
+    train_data = TensorDataset(train_inputs, train_masks, torch.tensor(train_labels))
+    train_sampler = RandomSampler(train_data)
+    train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=batch_size)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
+    import random
+    model.train()
+    model.cuda()
+    epochs = args.epoch
+    from utils import compute_metrics
+    for epoch_i in range(epochs):
+        # Initialize lists to store metrics for each epoch
+        train_accuracy_values = []
+        train_recall_values = []
+        train_confidence_pos_values = []
+        train_confidence_neg_values = []
+
+        # Set model to training mode
+        model.train()
+
+        # Initialize lists to store training loss and predictions for each batch
+        train_loss_values = []
+        train_preds = []
+
+        # Get the current learning rate
+        lr = optimizer.param_groups[0]['lr']
+
+        # Loop through batches of the training dataset using tqdm for progress tracking
+        progress_bar = tqdm(train_dataloader, desc=f"Epoch {epoch_i+1}/{epochs}", unit="batch")
+        # cnt = 0
+        for batch in progress_bar:
+            # cnt += 1 
+            # Load batch to GPU
+            b_input_ids = batch[0].to(device)
+            b_input_mask = batch[1].to(device)
+            b_labels = batch[2].to(device)
+
+            # Clear gradients
+            optimizer.zero_grad()
+
+            # Perform forward pass
+            # outputs = model(b_input_ids, token_type_ids=None, attention_mask=b_input_mask, labels=b_labels)
+
+            # Compute loss
+            # loss = outputs[0]
+            loss, outputs = compute_loss(model,b_input_ids,b_input_mask,b_labels)
+            
+            train_loss_values.append(loss.item())
+
+            # Perform backward pass
+            loss.backward()
+
+            # Update model parameters
+            optimizer.step()
+
+            # Record predictions
+            logits = outputs[1]
+
+            # Calculate epoch training accuracy, recall, and positive and negative confidence values
+            accuracy, recall, confidence_pos, confidence_neg = compute_metrics(logits, b_labels)
+            # Append metrics to lists
+            train_accuracy_values.append(accuracy)
+            train_recall_values.append(recall)
+            train_confidence_pos_values.append(confidence_pos)
+            train_confidence_neg_values.append(confidence_neg)
+            
+            # if cnt == 10: break
+            # Print metrics for this epoch
+            # print(f"batch: training loss: {loss:.4f}; accuracy: {accuracy:.4f}; recall: {recall:.4f}; pos confidence: {pos_prob:.4f}; neg confidence: {neg_prob:.4f}")
+
+        # Calculate average epoch training loss
+        train_loss = np.mean(train_loss_values)
+        accuracy = np.mean(train_accuracy_values)
+        recall = np.mean(train_recall_values)
+        pos_prob = np.mean(train_confidence_pos_values)
+        neg_prob = np.mean(train_confidence_neg_values)
+
+        # Print metrics for this epoch
+        print(f"Epoch {epoch_i+1}/{epochs} training loss: {train_loss:.4f}; accuracy: {accuracy:.4f}; recall: {recall:.4f}; pos confidence: {pos_prob:.4f}; neg confidence: {neg_prob:.4f}")
+        for epoch in range(args.epoch):
+            model.train()
+            step_cnt = len(train)
+
 if __name__ == '__main__':
-    main()
+    train()
