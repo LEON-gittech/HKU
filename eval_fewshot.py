@@ -267,7 +267,7 @@ def main():
     parser.add_argument('--top_k', type=str2bool, default=False, help="")
     parser.add_argument('--top_k_reverse', type=str2bool, default=False, help="")
     args = """--model '/opt/tiger/HKU/saved_models' --embedder "BAAI/bge-small-en-v1.5" --data_path "data/ARC-Challenge-test.jsonl" --start_index 0 --end_index 9999 --max_len 1024 --output_path "test_finetune" --overwrite False --prompt_type "v2.0" --N 8 --top_k True --top_k_reverse False""".replace("\"","").replace("\'","").split(" ")
-    args = parser.parse_args(args)
+    args = parser.parse_args()
 
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device_id)
 
@@ -520,5 +520,5 @@ def train():
     tokenizer.save_pretrained(save_directory)
 
 if __name__ == '__main__':
-    train()
-    # main()
+    # train()
+    main()
