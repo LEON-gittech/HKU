@@ -277,7 +277,7 @@ def main():
     problems = get_arc_problems(args.data_path)[args.start_index: args.end_index]
 
     num_samples = len(problems)
-    tokenizer, model = get_model(base_model=args.model)
+    tokenizer, model = get_mistral(base_model=args.model)
     model.to(device)
     # tokenizer, model = get_mistral(base_model=args.model)
     # tokenizer, model = get_t5(base_model=args.model, checkpoint="/opt/tiger/GenMC/outputs/arc_easy_large/lr_5e-05_seed_1_bs_8_ga_2_layer_num_1_alpha_1.0_beta_0.5/pytorch_model.bin")
